@@ -45,6 +45,8 @@ type ContentValue struct {
 // Content starlark.Value interface
 // --------------------------------------------------------------------------
 
+var _ Value = &ContentValue{}
+
 func (c *ContentValue) String() string {
 	return "Content{...}"
 }
@@ -64,7 +66,15 @@ func (c *ContentValue) Hash() (uint32, error) {
 	return starlark.String(c.RootDir).Hash()
 }
 
-// Content starlark.HasAttrs interface
+// Content starlark.SafeStringer interface
+// --------------------------------------------------------------------------
+
+var _ starlark.SafeStringer = &ContentValue{}
+
+func (c *ContentValue) SafeString(thread *starlark.Thread, sb starlark.StringBuilder) error {
+	_, err := sb.WriteString("Content{...}")
+	return err
+}
 // --------------------------------------------------------------------------
 
 var _ starlark.HasAttrs = new(ContentValue)
