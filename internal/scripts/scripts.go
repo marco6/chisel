@@ -75,20 +75,29 @@ func (c *ContentValue) SafeString(thread *starlark.Thread, sb starlark.StringBui
 	_, err := sb.WriteString("Content{...}")
 	return err
 }
+
+// Content starlark.HasSafeAttrs interface
 // --------------------------------------------------------------------------
 
-var _ starlark.HasAttrs = new(ContentValue)
+var _ starlark.HasSafeAttrs = &ContentValue{}
 
-func (c *ContentValue) Attr(name string) (Value, error) {
-	switch name {
-	case "read":
-		return starlark.NewBuiltin("Content.read", c.Read), nil
-	case "write":
-		return starlark.NewBuiltin("Content.write", c.Write), nil
-	case "list":
-		return starlark.NewBuiltin("Content.list", c.List), nil
+func (c *ContentValue) Attr(name string) (Value, error) { return c.SafeAttr(nil, name) }
+
+func (c *ContentValue) SafeAttr(thread *starlark.Thread, name string) (Value, error) {
+	const safety = starlark.CPUSafe | starlark.MemSafe | starlark.TimeSafe | starlark.IOSafe
+	if err := starlark.CheckSafety(thread, safety); err != nil {
+		return nil, err
 	}
-	return nil, nil
+	method, ok := contentValueMethods[name]
+	if !ok {
+		return nil, starlark.ErrNoSuchAttr
+	}
+	if thread != nil {
+		if err := thread.AddAllocs(starlark.EstimateSize(&starlark.Builtin{})); err != nil {
+			return nil, err
+		}
+	}
+	return method.BindReceiver(c), nil
 }
 
 func (c *ContentValue) AttrNames() []string {
@@ -105,6 +114,12 @@ const (
 	CheckRead = 1 << iota
 	CheckWrite
 )
+
+var contentValueMethods = map[string]*starlark.Builtin{
+	"read":  starlark.NewBuiltinWithSafety("read", starlark.NotSafe, contentValueRead),
+	"write": starlark.NewBuiltinWithSafety("write", starlark.NotSafe, contentValueWrite),
+	"list":  starlark.NewBuiltinWithSafety("list", starlark.NotSafe, contentValueList),
+}
 
 func (c *ContentValue) RealPath(path string, what Check) (string, error) {
 	if !filepath.IsAbs(c.RootDir) {
@@ -154,33 +169,35 @@ func (c *ContentValue) polishError(path starlark.String, err error) error {
 	return err
 }
 
-func (c *ContentValue) Read(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
+func contentValueRead(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
 	var path starlark.String
 	err := starlark.UnpackArgs("Content.read", args, kwargs, "path", &path)
 	if err != nil {
 		return nil, err
 	}
+	recv := fn.Receiver().(*ContentValue)
 
-	fpath, err := c.RealPath(path.GoString(), CheckRead)
+	fpath, err := recv.RealPath(path.GoString(), CheckRead)
 	if err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(fpath)
 	if err != nil {
-		return nil, c.polishError(path, err)
+		return nil, recv.polishError(path, err)
 	}
 	return starlark.String(data), nil
 }
 
-func (c *ContentValue) Write(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
+func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
 	var path starlark.String
 	var data starlark.String
 	err := starlark.UnpackArgs("Content.write", args, kwargs, "path", &path, "data", &data)
 	if err != nil {
 		return nil, err
 	}
+	recv := fn.Receiver().(*ContentValue)
 
-	fpath, err := c.RealPath(path.GoString(), CheckWrite)
+	fpath, err := recv.RealPath(path.GoString(), CheckWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -190,29 +207,30 @@ func (c *ContentValue) Write(thread *starlark.Thread, fn *starlark.Builtin, args
 	// explicitly instead.
 	err = os.WriteFile(fpath, fdata, 0644)
 	if err != nil {
-		return nil, c.polishError(path, err)
+		return nil, recv.polishError(path, err)
 	}
 	return starlark.None, nil
 }
 
-func (c *ContentValue) List(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
+func contentValueList(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
 	var path starlark.String
 	err := starlark.UnpackArgs("Content.list", args, kwargs, "path", &path)
 	if err != nil {
 		return nil, err
 	}
+	recv := fn.Receiver().(*ContentValue)
 
 	dpath := path.GoString()
 	if !strings.HasSuffix(dpath, "/") {
 		dpath += "/"
 	}
-	fpath, err := c.RealPath(dpath, CheckRead)
+	fpath, err := recv.RealPath(dpath, CheckRead)
 	if err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(fpath)
 	if err != nil {
-		return nil, c.polishError(path, err)
+		return nil, recv.polishError(path, err)
 	}
 	values := make([]Value, len(entries))
 	for i, entry := range entries {
