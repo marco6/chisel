@@ -1,18 +1,14 @@
 package scripts
 
 import (
-	"go.starlark.net/resolve"
-	"go.starlark.net/starlark"
+	"github.com/canonical/starlark/starlark"
+	"github.com/canonical/starlark/syntax"
 
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
-
-func init() {
-	resolve.AllowGlobalReassign = true
-}
 
 type Value = starlark.Value
 
@@ -22,10 +18,21 @@ type RunOptions struct {
 	Script    string
 }
 
+const requiredSafety = starlark.CPUSafe | starlark.MemSafe | starlark.TimeSafe
+
+var dialect = &syntax.FileOptions{
+	Set:               false,
+	While:             false,
+	TopLevelControl:   false,
+	GlobalReassign:    true,
+	LoadBindsGlobally: false,
+	Recursion:         false,
+}
+
 func Run(opts *RunOptions) error {
 	thread := &starlark.Thread{Name: opts.Label}
-	globals, err := starlark.ExecFile(thread, opts.Label, opts.Script, opts.Namespace)
-	_ = globals
+	thread.RequireSafety(requiredSafety)
+	_, err := starlark.ExecFileOptions(dialect, thread, opts.Label, opts.Script, opts.Namespace)
 	return err
 }
 
