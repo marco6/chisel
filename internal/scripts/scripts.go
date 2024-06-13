@@ -1,6 +1,8 @@
 package scripts
 
 import (
+	"io"
+
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/syntax"
 
@@ -118,7 +120,7 @@ const (
 var contentValueMethods = map[string]*starlark.Builtin{
 	"read":  starlark.NewBuiltinWithSafety("read", starlark.NotSafe, contentValueRead),
 	"write": starlark.NewBuiltinWithSafety("write", starlark.NotSafe, contentValueWrite),
-	"list":  starlark.NewBuiltinWithSafety("list", starlark.NotSafe, contentValueList),
+	"list":  starlark.NewBuiltinWithSafety("list", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueList),
 }
 
 func (c *ContentValue) RealPath(path string, what Check) (string, error) {
@@ -228,17 +230,38 @@ func contentValueList(thread *starlark.Thread, fn *starlark.Builtin, args starla
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(fpath)
+
+	values := []Value{}
+	valuesAppender := starlark.NewSafeAppender(thread, &values)
+	f, err := os.Open(fpath)
 	if err != nil {
 		return nil, recv.polishError(path, err)
 	}
-	values := make([]Value, len(entries))
-	for i, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() {
-			name += "/"
+	defer f.Close()
+	for {
+		// Read entries in small chunks so that it doesn't create a big-enough spike to care.
+		entries, err := f.ReadDir(16)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, recv.polishError(path, err)
 		}
-		values[i] = starlark.String(name)
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() {
+				name += "/"
+			}
+			value := starlark.Value(starlark.String(name))
+			if err := thread.AddAllocs(starlark.EstimateSize(value)); err != nil {
+				return nil, err
+			}
+			if err := valuesAppender.Append(value); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := thread.AddAllocs(starlark.EstimateSize(&starlark.List{})); err != nil {
+		return nil, err
 	}
 	return starlark.NewList(values), nil
 }
