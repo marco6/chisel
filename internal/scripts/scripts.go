@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"context"
 	"io"
 
 	"github.com/canonical/starlark/starlark"
@@ -118,7 +119,7 @@ const (
 )
 
 var contentValueMethods = map[string]*starlark.Builtin{
-	"read":  starlark.NewBuiltinWithSafety("read", starlark.NotSafe, contentValueRead),
+	"read":  starlark.NewBuiltinWithSafety("read", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueRead),
 	"write": starlark.NewBuiltinWithSafety("write", starlark.NotSafe, contentValueWrite),
 	"list":  starlark.NewBuiltinWithSafety("list", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueList),
 }
@@ -183,11 +184,47 @@ func contentValueRead(thread *starlark.Thread, fn *starlark.Builtin, args starla
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(fpath)
+	data, err := SafeReadFile(thread, fpath)
 	if err != nil {
 		return nil, recv.polishError(path, err)
 	}
+	if err := thread.AddAllocs(starlark.StringTypeOverhead); err != nil {
+		return nil, err
+	}
 	return starlark.String(data), nil
+}
+
+func SafeReadFile(thread *starlark.Thread, fpath string) (string, error) {
+	ctx := thread.Context()
+	if err := ctx.Err(); err != nil {
+		return "", context.Cause(ctx)
+	}
+
+	f, err := os.Open(fpath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	sb := starlark.NewSafeStringBuilder(thread)
+	errCh := make(chan error)
+
+	go func() {
+		_, err := f.WriteTo(sb)
+		errCh <- err
+		close(errCh)
+	}()
+
+	select {
+	case <-ctx.Done():
+		<-errCh
+		return "", context.Cause(ctx)
+	case err := <-errCh:
+		if err != nil {
+			return "", err
+		}
+		return sb.String(), err
+	}
 }
 
 func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
