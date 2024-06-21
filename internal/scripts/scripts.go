@@ -3,6 +3,7 @@ package scripts
 import (
 	"context"
 	"io"
+	"io/fs"
 
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/syntax"
@@ -206,25 +207,20 @@ func SafeReadFile(thread *starlark.Thread, fpath string) (string, error) {
 	}
 	defer f.Close()
 
+	stop := afterFunc(ctx, func() {
+		f.Close()
+	})
+	defer stop()
+
 	sb := starlark.NewSafeStringBuilder(thread)
-	errCh := make(chan error)
-
-	go func() {
-		_, err := f.WriteTo(sb)
-		errCh <- err
-		close(errCh)
-	}()
-
-	select {
-	case <-ctx.Done():
-		<-errCh
-		return "", context.Cause(ctx)
-	case err := <-errCh:
-		if err != nil {
-			return "", err
-		}
-		return sb.String(), err
+	_, err = f.WriteTo(sb)
+	if err == nil {
+		return sb.String(), nil
 	}
+	if err == os.ErrClosed {
+		return "", ctx.Err()
+	}
+	return "", err
 }
 
 func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
@@ -249,6 +245,30 @@ func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starl
 		return nil, recv.polishError(path, err)
 	}
 	return starlark.None, nil
+}
+
+func SafeWriteFile(thread *starlark.Thread, fpath string, data []byte, perm fs.FileMode) error {
+	ctx := thread.Context()
+	if err := thread.AddSteps(int64(len(data))); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	stop := afterFunc(ctx, func() {
+		f.Close()
+	})
+	defer stop()
+
+	_, err = f.Write(data)
+	if err == os.ErrClosed {
+		return ctx.Err()
+	}
+	return err
 }
 
 func contentValueList(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
