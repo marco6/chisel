@@ -207,7 +207,7 @@ func SafeReadFile(thread *starlark.Thread, fpath string) (string, error) {
 	}
 	defer f.Close()
 
-	stop := afterFunc(ctx, func() {
+	stop := context.AfterFunc(ctx, func() {
 		f.Close()
 	})
 	defer stop()
@@ -259,7 +259,7 @@ func SafeWriteFile(thread *starlark.Thread, fpath string, data []byte, perm fs.F
 	}
 	defer f.Close()
 
-	stop := afterFunc(ctx, func() {
+	stop := context.AfterFunc(ctx, func() {
 		f.Close()
 	})
 	defer stop()
