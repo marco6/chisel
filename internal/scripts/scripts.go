@@ -26,8 +26,8 @@ const requiredSafety = starlark.CPUSafe | starlark.MemSafe | starlark.TimeSafe
 
 var dialect = &syntax.FileOptions{
 	Set:               false,
-	While:             false,
-	TopLevelControl:   false,
+	While:             true,
+	TopLevelControl:   true,
 	GlobalReassign:    true,
 	LoadBindsGlobally: false,
 	Recursion:         false,
