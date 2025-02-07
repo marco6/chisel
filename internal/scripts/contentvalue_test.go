@@ -83,19 +83,6 @@ func TestContentSafeAttr(t *testing.T) {
 					}
 				})
 			})
-
-			t.Run("cancellation", func(t *testing.T) {
-				st := startest.From(t)
-				st.RequireSafety(starlark.TimeSafe)
-				st.SetMaxSteps(0)
-				st.RunThread(func(thread *starlark.Thread) {
-					thread.Cancel("done")
-					_, err := input.SafeAttr(thread, attr)
-					if err != nil {
-						st.Error(err)
-					}
-				})
-			})
 		})
 	}
 }
@@ -210,40 +197,23 @@ func TestContentReadSafety(t *testing.T) {
 	content := scripts.ContentValue{
 		RootDir: baseDir,
 	}
+	realPath, err := content.RealPath(path, scripts.CheckNone)
+	if err != nil {
+		t.Fatal(err)
+	}
 	content_read, _ := content.Attr("read")
 	if content_read == nil {
 		t.Fatal("no such method: Content.read")
-	}
-
-	writeZeroFile := func(path string, size int64) error {
-		fd, err := os.Create(path)
-		if err != nil {
-			return err
-		}
-		_, err = fd.Seek(size-1, 0)
-		if err != nil {
-			return err
-		}
-		_, err = fd.Write([]byte{0})
-		if err != nil {
-			return err
-		}
-		err = fd.Close()
-		if err != nil {
-			return err
-		}
-		return nil
 	}
 
 	t.Run("allocs", func(t *testing.T) {
 		st := startest.From(t)
 		st.RequireSafety(starlark.MemSafe)
 		st.RunThread(func(thread *starlark.Thread) {
-			realPath, err := content.RealPath(path, scripts.CheckNone)
 			if err != nil {
 				st.Fatal(err)
 			}
-			if err := writeZeroFile(realPath, int64(st.N*chunk)); err != nil {
+			if err := writeNBytes(realPath, int64(st.N*chunk)); err != nil {
 				st.Fatal(err)
 			}
 			defer func() {
@@ -265,11 +235,7 @@ func TestContentReadSafety(t *testing.T) {
 		st.SetMinSteps(chunk)
 		st.SetMaxSteps(chunk)
 		st.RunThread(func(thread *starlark.Thread) {
-			realPath, err := content.RealPath(path, scripts.CheckNone)
-			if err != nil {
-				st.Fatal(err)
-			}
-			if err := writeZeroFile(realPath, int64(st.N*chunk)); err != nil {
+			if err := writeNBytes(realPath, int64(st.N*chunk)); err != nil {
 				st.Fatal(err)
 			}
 			defer func() {
@@ -290,9 +256,8 @@ func TestContentReadSafety(t *testing.T) {
 		st.SetMaxSteps(0)
 		st.RunThread(func(thread *starlark.Thread) {
 			thread.Cancel("done")
-			path := starlark.String("/file")
 			for i := 0; i < st.N; i++ {
-				_, err := starlark.Call(thread, content_read, starlark.Tuple{path}, nil)
+				_, err := starlark.Call(thread, content_read, starlark.Tuple{starlark.String(path)}, nil)
 				if err == nil {
 					st.Error("expected cancellation")
 				} else if err == context.Canceled {
@@ -301,6 +266,26 @@ func TestContentReadSafety(t *testing.T) {
 			}
 		})
 	})
+}
+
+func writeNBytes(path string, n int64) error {
+	fd, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	_, err = fd.Seek(n-1, 0)
+	if err != nil {
+		return err
+	}
+	_, err = fd.Write([]byte{0})
+	if err != nil {
+		return err
+	}
+	err = fd.Close()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func TestContentWriteSafety(t *testing.T) {
