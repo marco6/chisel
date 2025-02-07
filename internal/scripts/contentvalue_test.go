@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/canonical/chisel/internal/fsutil"
 	"github.com/canonical/chisel/internal/scripts"
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/startest"
@@ -189,7 +190,7 @@ func TestSafeReadFileCancellation(t *testing.T) {
 	t.Run("eventually-cancelled", func(t *testing.T) {
 		thread := &starlark.Thread{}
 		go func() {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 			thread.Cancel("done")
 		}()
 		_, err := scripts.SafeReadFile(thread, "/dev/zero")
@@ -292,6 +293,64 @@ func TestContentReadSafety(t *testing.T) {
 			path := starlark.String("/file")
 			for i := 0; i < st.N; i++ {
 				_, err := starlark.Call(thread, content_read, starlark.Tuple{path}, nil)
+				if err == nil {
+					st.Error("expected cancellation")
+				} else if err == context.Canceled {
+					st.Errorf("expected cancellation, got: %v", err)
+				}
+			}
+		})
+	})
+}
+
+func TestContentWriteSafety(t *testing.T) {
+	const path = "/file"
+
+	baseDir := t.TempDir()
+	content := scripts.ContentValue{
+		RootDir: baseDir,
+		OnWrite: func(entry *fsutil.Entry) error {
+			return nil
+		},
+	}
+	content_write, _ := content.Attr("write")
+	if content_write == nil {
+		t.Fatal("no such method: Content.write")
+	}
+
+	t.Run("allocs", func(t *testing.T) {
+		st := startest.From(t)
+		st.RequireSafety(starlark.MemSafe)
+		st.RunThread(func(thread *starlark.Thread) {
+			result, err := starlark.Call(thread, content_write, starlark.Tuple{starlark.String(path), starlark.String(strings.Repeat("X", st.N))}, nil)
+			if err != nil {
+				st.Error(err)
+			}
+			st.KeepAlive(result)
+		})
+	})
+
+	t.Run("steps", func(t *testing.T) {
+		st := startest.From(t)
+		st.RequireSafety(starlark.CPUSafe)
+		st.SetMinSteps(1)
+		st.SetMaxSteps(1)
+		st.RunThread(func(thread *starlark.Thread) {
+			_, err := starlark.Call(thread, content_write, starlark.Tuple{starlark.String(path), starlark.String(strings.Repeat("X", st.N))}, nil)
+			if err != nil {
+				st.Error(err)
+			}
+		})
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		st := startest.From(t)
+		st.RequireSafety(starlark.CPUSafe)
+		st.SetMaxSteps(0)
+		st.RunThread(func(thread *starlark.Thread) {
+			thread.Cancel("done")
+			for i := 0; i < st.N; i++ {
+				_, err := starlark.Call(thread, content_write, starlark.Tuple{starlark.String(path), starlark.String("x")}, nil)
 				if err == nil {
 					st.Error("expected cancellation")
 				} else if err == context.Canceled {

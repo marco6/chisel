@@ -2,13 +2,12 @@ package scripts
 
 import (
 	"context"
+	"errors"
 	"io"
-	"io/fs"
 
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/syntax"
 
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,7 +126,7 @@ const (
 
 var contentValueMethods = map[string]*starlark.Builtin{
 	"read":  starlark.NewBuiltinWithSafety("read", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueRead),
-	"write": starlark.NewBuiltinWithSafety("write", starlark.NotSafe, contentValueWrite),
+	"write": starlark.NewBuiltinWithSafety("write", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueWrite),
 	"list":  starlark.NewBuiltinWithSafety("list", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueList),
 }
 
@@ -223,13 +222,17 @@ func SafeReadFile(thread *starlark.Thread, fpath string) (string, error) {
 	if err == nil {
 		return sb.String(), nil
 	}
-	if err == os.ErrClosed {
-		return "", ctx.Err()
+	if errors.Is(err, os.ErrClosed) {
+		if err := ctx.Err(); err != nil {
+			return "", ctx.Err()
+		}
 	}
 	return "", err
 }
 
 func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
+	const pathMax = 4096
+
 	var path starlark.String
 	var data starlark.String
 	err := starlark.UnpackArgs("Content.write", args, kwargs, "path", &path, "data", &data)
@@ -238,17 +241,23 @@ func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starl
 	}
 	recv := fn.Receiver().(*ContentValue)
 
+	if err := thread.AddSteps(starlark.SafeInt(len(data))); err != nil {
+		return nil, err
+	}
+	if err := thread.CheckAllocs(starlark.SafeInt(pathMax)); err != nil {
+		return nil, err
+	}
+
 	fpath, err := recv.RealPath(path.GoString(), CheckWrite)
 	if err != nil {
 		return nil, err
 	}
-	fdata := []byte(data.GoString())
 
 	// No mode parameter for now as slices are supposed to list files
 	// explicitly instead.
-	entry, err := fsutil.Create(&fsutil.CreateOptions{
+	entry, err := fsutil.CreateContext(thread.Context(), &fsutil.CreateOptions{
 		Path: fpath,
-		Data: bytes.NewReader(fdata),
+		Data: strings.NewReader(data.GoString()),
 		Mode: 0644,
 	})
 	if err != nil {
@@ -259,30 +268,6 @@ func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starl
 		return nil, err
 	}
 	return starlark.None, nil
-}
-
-func SafeWriteFile(thread *starlark.Thread, fpath string, data []byte, perm fs.FileMode) error {
-	ctx := thread.Context()
-	if err := thread.AddSteps(starlark.SafeInt(len(data))); err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	stop := context.AfterFunc(ctx, func() {
-		f.Close()
-	})
-	defer stop()
-
-	_, err = f.Write(data)
-	if err == os.ErrClosed {
-		return ctx.Err()
-	}
-	return err
 }
 
 func contentValueList(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
