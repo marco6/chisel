@@ -100,7 +100,7 @@ func (c *ContentValue) SafeAttr(thread *starlark.Thread, name string) (Value, er
 	}
 	method, ok := contentValueMethods[name]
 	if !ok {
-		return nil, starlark.ErrNoSuchAttr
+		return nil, starlark.ErrNoAttr
 	}
 	if thread != nil {
 		if err := thread.AddAllocs(starlark.EstimateSize(&starlark.Builtin{})); err != nil {
@@ -263,7 +263,7 @@ func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starl
 
 func SafeWriteFile(thread *starlark.Thread, fpath string, data []byte, perm fs.FileMode) error {
 	ctx := thread.Context()
-	if err := thread.AddSteps(int64(len(data))); err != nil {
+	if err := thread.AddSteps(starlark.SafeInt(len(data))); err != nil {
 		return err
 	}
 

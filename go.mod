@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/blakesmith/ar v0.0.0-20190502131153-809d4375e1fb
-	github.com/canonical/starlark v0.0.0-20240610135211-d05c558981a0
+	github.com/canonical/starlark v0.0.0-20250205155222-4d727543431f
 	github.com/jessevdk/go-flags v1.5.0
 	github.com/juju/fslock v0.0.0-20160525022230-4d5c94c67b4b
 	github.com/klauspost/compress v1.15.4
