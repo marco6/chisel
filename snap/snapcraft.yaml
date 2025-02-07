@@ -8,23 +8,18 @@ description: |
   filesystem which can be packaged into an OCI-compliant
   container image or similar.
 
-  Usage: chisel <command> [<options>...]
-
-  Commands can be classified as follows:
-
-    Basic: help, version
-    Action: cut
-
-  For more information about a command, run 'chisel help <command>'.
-  For a short summary of all commands, run 'chisel help --all'.
-
   This snap can only install the slices in a location inside the
   user $HOME directory i.e. the --root option in "cut" command
   should have a location inside the user $HOME directory.
-issues: https://github.com/canonical/chisel/issues
+issues:
+  - https://github.com/canonical/chisel/issues
+  - https://github.com/Canonical/chisel/security/advisories
 source-code: https://github.com/canonical/chisel
 license: AGPL-3.0
 adopt-info: chisel-release-data
+contact:
+  - rocks@canonical.com
+  - security@ubuntu.com
 
 base: core22
 confinement: strict
@@ -34,13 +29,15 @@ parts:
     plugin: go
     source: .
     build-snaps:
-      - go/1.21/stable
+      - go/1.22/stable
     build-environment:
       - CGO_ENABLED: 0
       - GOFLAGS: -trimpath -ldflags=-w -ldflags=-s
     override-build: |
       go generate ./cmd
       craftctl default
+    stage:
+      - -bin/chrorder
 
   chisel-release-data:
     plugin: nil
@@ -56,9 +53,17 @@ parts:
       craftctl set grade="$grade"
     after: [chisel]
 
+plugs:
+  etc-apt-auth-conf-d:
+    interface: system-files
+    read:
+      - /etc/apt/auth.conf.d
+      - /etc/apt/auth.conf.d/90ubuntu-advantage
+
 apps:
   chisel:
     command: bin/chisel
     plugs:
       - network
       - home
+      - etc-apt-auth-conf-d

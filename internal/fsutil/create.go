@@ -15,22 +15,29 @@ type CreateOptions struct {
 	Path string
 	Mode fs.FileMode
 	Data io.Reader
+	// If Link is not empty and the symlink flag is set in Mode, a symlink is
+	// created. If the symlink flag is not set in Mode, a hard link is created.
 	Link string
 	// If MakeParents is true, missing parent directories of Path are
 	// created with permissions 0755.
 	MakeParents bool
+	// If OverrideMode is true and entry already exists, update the mode. Does
+	// not affect symlinks.
+	OverrideMode bool
 }
 
 type Entry struct {
-	Path string
-	Mode fs.FileMode
-	Hash string
-	Size int
-	Link string
+	Path   string
+	Mode   fs.FileMode
+	SHA256 string
+	Size   int
+	Link   string
 }
 
 // Create creates a filesystem entry according to the provided options and returns
 // the information about the created entry.
+//
+// Create can return errors from the os package.
 func Create(options *CreateOptions) (*Entry, error) {
 	rp := &readerProxy{inner: options.Data, h: sha256.New()}
 	// Use the proxy instead of the raw Reader.
@@ -45,10 +52,15 @@ func Create(options *CreateOptions) (*Entry, error) {
 			return nil, err
 		}
 	}
+
 	switch o.Mode & fs.ModeType {
 	case 0:
-		err = createFile(o)
-		hash = hex.EncodeToString(rp.h.Sum(nil))
+		if o.Link != "" {
+			err = createHardLink(o)
+		} else {
+			err = createFile(o)
+			hash = hex.EncodeToString(rp.h.Sum(nil))
+		}
 	case fs.ModeDir:
 		err = createDir(o)
 	case fs.ModeSymlink:
@@ -60,14 +72,65 @@ func Create(options *CreateOptions) (*Entry, error) {
 		return nil, err
 	}
 
+	// Entry should describe the created file, not the target the link points to.
+	s, err := os.Lstat(o.Path)
+	if err != nil {
+		return nil, err
+	}
+	mode := s.Mode()
+	if o.Link != "" {
+		if options.Mode.IsRegular() {
+			// Hard link.
+			// In the case where the hard link points to a symlink the entry
+			// should identify the created file and not the symlink. A hard link
+			// is identified by the mode being regular and link not empty.
+			mode = mode &^ fs.ModeSymlink
+		}
+	} else if o.OverrideMode && mode != o.Mode {
+		err := os.Chmod(o.Path, o.Mode)
+		if err != nil {
+			return nil, err
+		}
+		mode = o.Mode
+	}
+
 	entry := &Entry{
-		Path: o.Path,
-		Mode: o.Mode,
-		Hash: hash,
-		Size: rp.size,
-		Link: o.Link,
+		Path:   o.Path,
+		Mode:   mode,
+		SHA256: hash,
+		Size:   rp.size,
+		Link:   o.Link,
 	}
 	return entry, nil
+}
+
+// CreateWriter handles the creation of a regular file and collects the
+// information recorded in Entry. The Hash and Size attributes are set on
+// calling Close() on the Writer.
+func CreateWriter(options *CreateOptions) (io.WriteCloser, *Entry, error) {
+	if !options.Mode.IsRegular() {
+		return nil, nil, fmt.Errorf("unsupported file type: %s", options.Path)
+	}
+	if options.MakeParents {
+		if err := os.MkdirAll(filepath.Dir(options.Path), 0755); err != nil {
+			return nil, nil, err
+		}
+	}
+	file, err := os.OpenFile(options.Path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, options.Mode)
+	if err != nil {
+		return nil, nil, err
+	}
+	entry := &Entry{
+		Path: options.Path,
+		Mode: options.Mode,
+	}
+	wp := &writerProxy{
+		entry: entry,
+		inner: file,
+		h:     sha256.New(),
+		size:  0,
+	}
+	return wp, entry, nil
 }
 
 func createDir(o *CreateOptions) error {
@@ -116,6 +179,25 @@ func createSymlink(o *CreateOptions) error {
 	return os.Symlink(o.Link, o.Path)
 }
 
+func createHardLink(o *CreateOptions) error {
+	debugf("Creating hard link: %s => %s", o.Path, o.Link)
+	err := os.Link(o.Link, o.Path)
+	if err != nil && os.IsExist(err) {
+		linkInfo, serr := os.Lstat(o.Link)
+		if serr != nil {
+			return serr
+		}
+		pathInfo, serr := os.Lstat(o.Path)
+		if serr != nil {
+			return serr
+		}
+		if os.SameFile(linkInfo, pathInfo) {
+			return nil
+		}
+	}
+	return err
+}
+
 // readerProxy implements the io.Reader interface proxying the calls to its
 // inner io.Reader. On each read, the proxy keeps track of the file size and hash.
 type readerProxy struct {
@@ -131,4 +213,30 @@ func (rp *readerProxy) Read(p []byte) (n int, err error) {
 	rp.h.Write(p[:n])
 	rp.size += n
 	return n, err
+}
+
+// writerProxy implements the io.WriteCloser interface proxying the calls to its
+// inner io.WriteCloser. On each write, the proxy keeps track of the file size
+// and hash. The associated entry hash and size are updated when Close() is
+// called.
+type writerProxy struct {
+	inner io.WriteCloser
+	h     hash.Hash
+	size  int
+	entry *Entry
+}
+
+var _ io.WriteCloser = (*writerProxy)(nil)
+
+func (rp *writerProxy) Write(p []byte) (n int, err error) {
+	n, err = rp.inner.Write(p)
+	rp.h.Write(p[:n])
+	rp.size += n
+	return n, err
+}
+
+func (rp *writerProxy) Close() error {
+	rp.entry.SHA256 = hex.EncodeToString(rp.h.Sum(nil))
+	rp.entry.Size = rp.size
+	return rp.inner.Close()
 }

@@ -1,6 +1,6 @@
 module github.com/canonical/chisel
 
-go 1.21
+go 1.22
 
 require (
 	github.com/blakesmith/ar v0.0.0-20190502131153-809d4375e1fb
@@ -9,16 +9,16 @@ require (
 	github.com/juju/fslock v0.0.0-20160525022230-4d5c94c67b4b
 	github.com/klauspost/compress v1.15.4
 	github.com/ulikunitz/xz v0.5.10
-	golang.org/x/crypto v0.21.0
-	golang.org/x/term v0.18.0
+	golang.org/x/crypto v0.32.0
+	golang.org/x/term v0.28.0
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
-	gopkg.in/yaml.v3 v3.0.0-20220512140231-539c8e751b99
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/google/go-cmp v0.5.5 // indirect
 	github.com/kr/pretty v0.2.1 // indirect
 	github.com/kr/text v0.1.0 // indirect
-	golang.org/x/sys v0.18.0 // indirect
+	golang.org/x/sys v0.29.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 )

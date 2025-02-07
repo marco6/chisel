@@ -2,6 +2,8 @@ package deb_test
 
 import (
 	"bytes"
+	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,7 +19,7 @@ type extractTest struct {
 	summary string
 	pkgdata []byte
 	options deb.ExtractOptions
-	hackopt func(o *deb.ExtractOptions)
+	hackopt func(c *C, o *deb.ExtractOptions)
 	result  map[string]string
 	// paths which the extractor did not create explicitly.
 	notCreated []string
@@ -98,7 +100,7 @@ var extractTests = []extractTest{{
 		"/dir/several/levels/deep/file": "file 0644 6bc26dff",
 		"/other-dir/":                   "dir 0755",
 	},
-	hackopt: func(o *deb.ExtractOptions) {
+	hackopt: func(c *C, o *deb.ExtractOptions) {
 		o.Create = nil
 	},
 }, {
@@ -352,6 +354,110 @@ var extractTests = []extractTest{{
 		},
 	},
 	error: `cannot extract from package "test-package": path /dir/ requested twice with diverging mode: 0777 != 0000`,
+}, {
+	summary: "Single hard link entry can be extracted with the content entry",
+	pkgdata: testutil.MustMakeDeb([]testutil.TarEntry{
+		testutil.Dir(0755, "./"),
+		testutil.Reg(0644, "./file", "text for file"),
+		testutil.Hrd(0644, "./hardlink", "./file"),
+	}),
+	options: deb.ExtractOptions{
+		Extract: map[string][]deb.ExtractInfo{
+			"/**": []deb.ExtractInfo{{
+				Path: "/**",
+			}},
+		},
+	},
+	result: map[string]string{
+		"/file":     "file 0644 28121945 <1>",
+		"/hardlink": "file 0644 28121945 <1>",
+	},
+	notCreated: []string{},
+}, {
+	summary: "Single hard link entry can be extracted without the content entry",
+	pkgdata: testutil.MustMakeDeb([]testutil.TarEntry{
+		testutil.Dir(0755, "./"),
+		testutil.Reg(0644, "./file", "text for file"),
+		testutil.Hrd(0644, "./hardlink", "./file"),
+	}),
+	options: deb.ExtractOptions{
+		Extract: map[string][]deb.ExtractInfo{
+			"/hardlink": []deb.ExtractInfo{{
+				Path: "/hardlink",
+			}},
+		},
+	},
+	result: map[string]string{
+		"/hardlink": "file 0644 28121945",
+	},
+	notCreated: []string{},
+}, {
+	summary: "Dangling hard link",
+	pkgdata: testutil.MustMakeDeb([]testutil.TarEntry{
+		testutil.Dir(0755, "./"),
+		testutil.Hrd(0644, "./hardlink", "./non-existing-target"),
+	}),
+	options: deb.ExtractOptions{
+		Extract: map[string][]deb.ExtractInfo{
+			"/hardlink": []deb.ExtractInfo{{
+				Path: "/hardlink",
+			}},
+		},
+	},
+	error: `cannot extract from package "test-package": cannot create hard link /hardlink: no content at /non-existing-target`,
+}, {
+	summary: "Multiple dangling hard links",
+	pkgdata: testutil.MustMakeDeb([]testutil.TarEntry{
+		testutil.Dir(0755, "./"),
+		testutil.Hrd(0644, "./hardlink1", "./non-existing-target"),
+		testutil.Hrd(0644, "./hardlink2", "./non-existing-target"),
+	}),
+	options: deb.ExtractOptions{
+		Extract: map[string][]deb.ExtractInfo{
+			"/**": []deb.ExtractInfo{{
+				Path: "/**",
+			}},
+		},
+	},
+	error: `cannot extract from package "test-package": cannot create hard link /hardlink1: no content at /non-existing-target`,
+}, {
+	summary: "Hard link does not follow the symlink",
+	pkgdata: testutil.MustMakeDeb([]testutil.TarEntry{
+		testutil.Dir(0755, "./"),
+		testutil.Lnk(0644, "./symlink", "./file"),
+		testutil.Hrd(0644, "./hardlink", "./symlink"),
+	}),
+	options: deb.ExtractOptions{
+		Extract: map[string][]deb.ExtractInfo{
+			"/**": []deb.ExtractInfo{{
+				Path: "/**",
+			}},
+		},
+	},
+	result: map[string]string{
+		"/hardlink": "symlink ./file <1>",
+		"/symlink":  "symlink ./file <1>",
+	},
+	notCreated: []string{},
+}, {
+	summary: "Explicit extraction overrides existing file",
+	pkgdata: testutil.PackageData["test-package"],
+	options: deb.ExtractOptions{
+		Extract: map[string][]deb.ExtractInfo{
+			"/dir/": []deb.ExtractInfo{{
+				Path: "/dir/",
+				Mode: 0777,
+			}},
+		},
+	},
+	hackopt: func(c *C, o *deb.ExtractOptions) {
+		err := os.Mkdir(path.Join(o.TargetDir, "/dir"), 0666)
+		c.Assert(err, IsNil)
+	},
+	result: map[string]string{
+		"/dir/": "dir 0777",
+	},
+	notCreated: []string{},
 }}
 
 func (s *S) TestExtract(c *C) {
@@ -374,10 +480,10 @@ func (s *S) TestExtract(c *C) {
 		}
 
 		if test.hackopt != nil {
-			test.hackopt(&options)
+			test.hackopt(c, &options)
 		}
 
-		err := deb.Extract(bytes.NewBuffer(test.pkgdata), &options)
+		err := deb.Extract(bytes.NewReader(test.pkgdata), &options)
 		if test.error != "" {
 			c.Assert(err, ErrorMatches, test.error)
 			continue
@@ -488,7 +594,7 @@ func (s *S) TestExtractCreateCallback(c *C) {
 			return nil
 		}
 
-		err := deb.Extract(bytes.NewBuffer(test.pkgdata), &options)
+		err := deb.Extract(bytes.NewReader(test.pkgdata), &options)
 		c.Assert(err, IsNil)
 
 		c.Assert(createExtractInfos, DeepEquals, test.calls)
