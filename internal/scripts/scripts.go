@@ -184,15 +184,15 @@ func contentValueRead(thread *starlark.Thread, fn *starlark.Builtin, args starla
 	if err != nil {
 		return nil, err
 	}
-	recv := fn.Receiver().(*ContentValue)
+	c := fn.Receiver().(*ContentValue)
 
-	fpath, err := recv.RealPath(path.GoString(), CheckRead)
+	fpath, err := c.RealPath(path.GoString(), CheckRead)
 	if err != nil {
 		return nil, err
 	}
 	data, err := SafeReadFile(thread, fpath)
 	if err != nil {
-		return nil, recv.polishError(path, err)
+		return nil, c.polishError(path, err)
 	}
 	if err := thread.AddAllocs(starlark.StringTypeOverhead); err != nil {
 		return nil, err
@@ -239,7 +239,7 @@ func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starl
 	if err != nil {
 		return nil, err
 	}
-	recv := fn.Receiver().(*ContentValue)
+	c := fn.Receiver().(*ContentValue)
 
 	if err := thread.AddSteps(starlark.SafeInt(len(data))); err != nil {
 		return nil, err
@@ -248,7 +248,7 @@ func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starl
 		return nil, err
 	}
 
-	fpath, err := recv.RealPath(path.GoString(), CheckWrite)
+	fpath, err := c.RealPath(path.GoString(), CheckWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -261,9 +261,9 @@ func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starl
 		Mode: 0644,
 	})
 	if err != nil {
-		return nil, recv.polishError(path, err)
+		return nil, c.polishError(path, err)
 	}
-	err = recv.OnWrite(entry)
+	err = c.OnWrite(entry)
 	if err != nil {
 		return nil, err
 	}
@@ -276,13 +276,13 @@ func contentValueList(thread *starlark.Thread, fn *starlark.Builtin, args starla
 	if err != nil {
 		return nil, err
 	}
-	recv := fn.Receiver().(*ContentValue)
+	c := fn.Receiver().(*ContentValue)
 
 	dpath := path.GoString()
 	if !strings.HasSuffix(dpath, "/") {
 		dpath += "/"
 	}
-	fpath, err := recv.RealPath(dpath, CheckRead)
+	fpath, err := c.RealPath(dpath, CheckRead)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +291,7 @@ func contentValueList(thread *starlark.Thread, fn *starlark.Builtin, args starla
 	valuesAppender := starlark.NewSafeAppender(thread, &values)
 	f, err := os.Open(fpath)
 	if err != nil {
-		return nil, recv.polishError(path, err)
+		return nil, c.polishError(path, err)
 	}
 	defer f.Close()
 	for {
@@ -300,7 +300,7 @@ func contentValueList(thread *starlark.Thread, fn *starlark.Builtin, args starla
 		if err == io.EOF {
 			break
 		} else if err != nil {
-			return nil, recv.polishError(path, err)
+			return nil, c.polishError(path, err)
 		}
 		for _, entry := range entries {
 			name := entry.Name()

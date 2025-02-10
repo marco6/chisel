@@ -5,266 +5,296 @@ import (
 	"io/fs"
 	"os"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/canonical/chisel/internal/fsutil"
 	"github.com/canonical/chisel/internal/scripts"
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/startest"
+	. "gopkg.in/check.v1"
 )
 
 func isStarlarkCancellation(err error) bool {
 	return strings.Contains(err.Error(), "Starlark computation cancelled:")
 }
 
-func TestContentSafeString(t *testing.T) {
+func (s *S) TestContentSafeStringNilThread(c *C) {
 	input := &scripts.ContentValue{}
-	t.Run("nil-thread", func(t *testing.T) {
-		builder := new(strings.Builder)
-		if err := input.SafeString(nil, builder); err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-	})
+	builder := new(strings.Builder)
+	err := input.SafeString(nil, builder)
+	c.Assert(err, IsNil)
+}
 
-	t.Run("consistency", func(t *testing.T) {
-		thread := &starlark.Thread{}
-		builder := new(strings.Builder)
-		if err := input.SafeString(thread, builder); err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		expected := input.String()
-		actual := builder.String()
-		if expected != actual {
-			t.Errorf("inconsistent stringer implementation: expected %s got %s", expected, actual)
-		}
-	})
+func (s *S) TestContentSafeStringConsistency(c *C) {
+	input := &scripts.ContentValue{}
+	thread := &starlark.Thread{}
+	builder := new(strings.Builder)
+	err := input.SafeString(thread, builder)
+	c.Assert(err, IsNil)
+	expected := input.String()
+	actual := builder.String()
+	c.Assert(actual, Equals, expected)
+}
 
-	t.Run("cancellation", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.TimeSafe)
-		st.SetMaxSteps(0)
-		st.RunThread(func(thread *starlark.Thread) {
-			thread.Cancel("done")
-			builder := starlark.NewSafeStringBuilder(thread)
-			err := input.SafeString(thread, builder)
-			if err == nil {
-				st.Error("expected cancellation")
-			} else if !isStarlarkCancellation(err) {
-				st.Errorf("expected cancellation, got: %v", err)
-			}
-		})
+func (s *S) TestContentSafeStringCancellation(c *C) {
+	st := startest.From(c)
+	st.RequireSafety(starlark.TimeSafe)
+	st.SetMaxSteps(0)
+	st.RunThread(func(thread *starlark.Thread) {
+		thread.Cancel("done")
+		builder := starlark.NewSafeStringBuilder(thread)
+		input := &scripts.ContentValue{}
+		err := input.SafeString(thread, builder)
+		if err == nil {
+			st.Error("expected cancellation")
+		} else if !isStarlarkCancellation(err) {
+			st.Errorf("expected cancellation, got: %v", err)
+		}
 	})
 }
 
-func TestContentSafeAttr(t *testing.T) {
+func (s *S) TestContentSafeAttrNilThread(c *C) {
 	input := &scripts.ContentValue{}
 
 	for _, attr := range input.AttrNames() {
-		t.Run(attr, func(t *testing.T) {
-			t.Run("nil-thread", func(t *testing.T) {
-				_, err := input.SafeAttr(nil, attr)
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
-			})
-
-			t.Run("resources", func(t *testing.T) {
-				st := startest.From(t)
-				st.RequireSafety(starlark.CPUSafe | starlark.MemSafe)
-				st.SetMaxSteps(0)
-				st.RunThread(func(thread *starlark.Thread) {
-					for i := 0; i < st.N; i++ {
-						result, err := input.SafeAttr(thread, attr)
-						if err != nil {
-							st.Error(err)
-						}
-						st.KeepAlive(result)
-					}
-				})
-			})
-		})
+		attr, err := input.SafeAttr(nil, attr)
+		c.Assert(attr, NotNil)
+		c.Assert(err, IsNil)
 	}
 }
 
-func TestContentListSafety(t *testing.T) {
-	baseDir := t.TempDir()
-	if err := os.Mkdir(baseDir+"/dir", fs.ModeDir|0765); err != nil {
-		t.Fatal(err)
-	}
-	if f, err := os.Create(baseDir + "/file"); err != nil {
-		t.Fatal(err)
-	} else {
-		f.Close()
-	}
-
-	content := scripts.ContentValue{
-		RootDir: baseDir,
-	}
-	content_list, _ := content.Attr("list")
-	if content_list == nil {
-		t.Fatal("no such method: Content.list")
-	}
-
-	t.Run("allocs", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.MemSafe)
+func (s *S) TestContentSafeAttrResources(c *C) {
+	input := &scripts.ContentValue{}
+	st := startest.From(c)
+	st.RequireSafety(starlark.CPUSafe | starlark.MemSafe)
+	st.SetMaxSteps(0)
+	for _, attr := range input.AttrNames() {
 		st.RunThread(func(thread *starlark.Thread) {
-			path := starlark.String("/")
 			for i := 0; i < st.N; i++ {
-				result, err := starlark.Call(thread, content_list, starlark.Tuple{path}, nil)
+				result, err := input.SafeAttr(thread, attr)
 				if err != nil {
 					st.Error(err)
 				}
 				st.KeepAlive(result)
 			}
 		})
-	})
-
-	t.Run("steps", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.CPUSafe)
-		st.SetMinSteps(2)
-		st.SetMaxSteps(4)
-		st.RunThread(func(thread *starlark.Thread) {
-			path := starlark.String("/")
-			for i := 0; i < st.N; i++ {
-				_, err := starlark.Call(thread, content_list, starlark.Tuple{path}, nil)
-				if err != nil {
-					st.Error(err)
-				}
-			}
-		})
-	})
-
-	t.Run("cancellation", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.CPUSafe)
-		st.SetMaxSteps(0)
-		st.RunThread(func(thread *starlark.Thread) {
-			thread.Cancel("done")
-			path := starlark.String("/")
-			for i := 0; i < st.N; i++ {
-				_, err := starlark.Call(thread, content_list, starlark.Tuple{path}, nil)
-				if err == nil {
-					st.Error("expected cancellation")
-				} else if !isStarlarkCancellation(err) {
-					st.Errorf("expected cancellation, got: %v", err)
-				}
-			}
-		})
-	})
+	}
 }
 
-func TestSafeReadFileCancellation(t *testing.T) {
-	t.Run("already-cancelled", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.CPUSafe)
-		st.SetMaxSteps(0)
-		st.RunThread(func(thread *starlark.Thread) {
-			thread.Cancel("done")
-			for i := 0; i < st.N; i++ {
-				_, err := scripts.SafeReadFile(thread, "/dev/zero")
-				if err == nil {
-					st.Error("expected cancellation")
-				} else if err != context.Canceled {
-					st.Errorf("expected cancellation, got: %v", err)
-				}
-			}
-		})
-	})
+func (s *S) TestContentListSafetyAllocs(c *C) {
+	baseDir := c.MkDir()
 
-	t.Run("eventually-cancelled", func(t *testing.T) {
-		thread := &starlark.Thread{}
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			thread.Cancel("done")
-		}()
-		_, err := scripts.SafeReadFile(thread, "/dev/zero")
-		if err == nil {
-			t.Error("expected cancellation")
-		} else if err != context.Canceled {
-			t.Errorf("expected cancellation, got: %v", err)
-		}
-	})
-}
+	err := os.Mkdir(baseDir+"/dir", fs.ModeDir|0765)
+	c.Assert(err, IsNil)
 
-func TestContentReadSafety(t *testing.T) {
-	const path = "/file"
-	const chunk = 1024
+	f, err := os.Create(baseDir + "/file")
+	c.Assert(err, IsNil)
+	f.Close()
 
-	baseDir := t.TempDir()
 	content := scripts.ContentValue{
 		RootDir: baseDir,
 	}
-	realPath, err := content.RealPath(path, scripts.CheckNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content_read, _ := content.Attr("read")
-	if content_read == nil {
-		t.Fatal("no such method: Content.read")
-	}
+	contentList, err := content.Attr("list")
+	c.Assert(contentList, NotNil)
+	c.Assert(err, IsNil)
 
-	t.Run("allocs", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.MemSafe)
-		st.RunThread(func(thread *starlark.Thread) {
-			if err != nil {
-				st.Fatal(err)
-			}
-			if err := writeNBytes(realPath, int64(st.N*chunk)); err != nil {
-				st.Fatal(err)
-			}
-			defer func() {
-				if err := os.Remove(realPath); err != nil {
-					st.Fatal(err)
-				}
-			}()
-			result, err := starlark.Call(thread, content_read, starlark.Tuple{starlark.String(path)}, nil)
+	st := startest.From(c)
+	st.RequireSafety(starlark.MemSafe)
+	st.RunThread(func(thread *starlark.Thread) {
+		path := starlark.String("/")
+		for i := 0; i < st.N; i++ {
+			result, err := starlark.Call(thread, contentList, starlark.Tuple{path}, nil)
 			if err != nil {
 				st.Error(err)
 			}
 			st.KeepAlive(result)
-		})
+		}
 	})
+}
 
-	t.Run("steps", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.CPUSafe)
-		st.SetMinSteps(chunk)
-		st.SetMaxSteps(chunk)
-		st.RunThread(func(thread *starlark.Thread) {
-			if err := writeNBytes(realPath, int64(st.N*chunk)); err != nil {
-				st.Fatal(err)
-			}
-			defer func() {
-				if err := os.Remove(realPath); err != nil {
-					st.Fatal(err)
-				}
-			}()
-			_, err = starlark.Call(thread, content_read, starlark.Tuple{starlark.String(path)}, nil)
+func (s *S) TestContentListSafetySteps(c *C) {
+	baseDir := c.MkDir()
+
+	err := os.Mkdir(baseDir+"/dir", fs.ModeDir|0765)
+	c.Assert(err, IsNil)
+
+	f, err := os.Create(baseDir + "/file")
+	c.Assert(err, IsNil)
+	f.Close()
+
+	content := scripts.ContentValue{
+		RootDir: baseDir,
+	}
+	contentList, err := content.Attr("list")
+	c.Assert(contentList, NotNil)
+	c.Assert(err, IsNil)
+
+	st := startest.From(c)
+	st.RequireSafety(starlark.CPUSafe)
+	st.SetMinSteps(2)
+	st.SetMaxSteps(4)
+	st.RunThread(func(thread *starlark.Thread) {
+		path := starlark.String("/")
+		for i := 0; i < st.N; i++ {
+			_, err := starlark.Call(thread, contentList, starlark.Tuple{path}, nil)
 			if err != nil {
 				st.Error(err)
 			}
-		})
+		}
 	})
 
-	t.Run("cancellation", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.CPUSafe)
-		st.SetMaxSteps(0)
-		st.RunThread(func(thread *starlark.Thread) {
-			thread.Cancel("done")
-			for i := 0; i < st.N; i++ {
-				_, err := starlark.Call(thread, content_read, starlark.Tuple{starlark.String(path)}, nil)
-				if err == nil {
-					st.Error("expected cancellation")
-				} else if err == context.Canceled {
-					st.Errorf("expected cancellation, got: %v", err)
-				}
+}
+
+func (s *S) TestContentListSafetyCancellation(c *C) {
+	baseDir := c.MkDir()
+
+	err := os.Mkdir(baseDir+"/dir", fs.ModeDir|0765)
+	c.Assert(err, IsNil)
+
+	f, err := os.Create(baseDir + "/file")
+	c.Assert(err, IsNil)
+	f.Close()
+
+	content := scripts.ContentValue{
+		RootDir: baseDir,
+	}
+	contentList, err := content.Attr("list")
+	c.Assert(contentList, NotNil)
+	c.Assert(err, IsNil)
+
+	st := startest.From(c)
+	st.RequireSafety(starlark.CPUSafe)
+	st.SetMaxSteps(0)
+	st.RunThread(func(thread *starlark.Thread) {
+		thread.Cancel("done")
+		path := starlark.String("/")
+		for i := 0; i < st.N; i++ {
+			_, err := starlark.Call(thread, contentList, starlark.Tuple{path}, nil)
+			if err == nil {
+				st.Error("expected cancellation")
+			} else if !isStarlarkCancellation(err) {
+				st.Errorf("expected cancellation, got: %v", err)
 			}
-		})
+		}
+	})
+}
+
+func (s *S) TestSafeReadFileCancellation(c *C) {
+	thread := &starlark.Thread{}
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		thread.Cancel("done")
+	}()
+	_, err := scripts.SafeReadFile(thread, "/dev/zero")
+	c.Assert(err, NotNil)
+
+	st := startest.From(c)
+	st.RequireSafety(starlark.CPUSafe)
+	st.SetMaxSteps(0)
+	st.RunThread(func(thread *starlark.Thread) {
+		thread.Cancel("done")
+		for i := 0; i < st.N; i++ {
+			_, err := scripts.SafeReadFile(thread, "/dev/zero")
+			if err == nil {
+				st.Error("expected cancellation")
+			} else if err != context.Canceled {
+				st.Errorf("expected cancellation, got: %v", err)
+			}
+		}
+	})
+}
+
+func (s *S) TestContentReadSafetyAllocs(c *C) {
+	const path = "/file"
+	const chunk = 1024
+
+	baseDir := c.MkDir()
+	content := scripts.ContentValue{
+		RootDir: baseDir,
+	}
+	realPath, err := content.RealPath(path, scripts.CheckNone)
+	c.Assert(err, IsNil)
+	contentRead, err := content.Attr("read")
+	c.Assert(err, IsNil)
+	c.Assert(contentRead, NotNil)
+
+	st := startest.From(c)
+	st.RequireSafety(starlark.MemSafe)
+	st.RunThread(func(thread *starlark.Thread) {
+		if err := writeNBytes(realPath, int64(st.N*chunk)); err != nil {
+			st.Fatal(err)
+		}
+		defer func() {
+			if err := os.Remove(realPath); err != nil {
+				st.Fatal(err)
+			}
+		}()
+		result, err := starlark.Call(thread, contentRead, starlark.Tuple{starlark.String(path)}, nil)
+		if err != nil {
+			st.Error(err)
+		}
+		st.KeepAlive(result)
+	})
+}
+
+func (s *S) TestContentReadSafetySteps(c *C) {
+	const path = "/file"
+	const chunk = 1024
+
+	baseDir := c.MkDir()
+	content := scripts.ContentValue{
+		RootDir: baseDir,
+	}
+	realPath, err := content.RealPath(path, scripts.CheckNone)
+	c.Assert(err, IsNil)
+	contentRead, err := content.Attr("read")
+	c.Assert(err, IsNil)
+	c.Assert(contentRead, NotNil)
+
+	st := startest.From(c)
+	st.RequireSafety(starlark.CPUSafe)
+	st.SetMinSteps(chunk)
+	st.SetMaxSteps(chunk)
+	st.RunThread(func(thread *starlark.Thread) {
+		if err := writeNBytes(realPath, int64(st.N*chunk)); err != nil {
+			st.Fatal(err)
+		}
+		defer func() {
+			if err := os.Remove(realPath); err != nil {
+				st.Fatal(err)
+			}
+		}()
+		_, err = starlark.Call(thread, contentRead, starlark.Tuple{starlark.String(path)}, nil)
+		if err != nil {
+			st.Error(err)
+		}
+	})
+}
+
+func (s *S) TestContentReadSafetyCancellation(c *C) {
+	const path = "/file"
+
+	baseDir := c.MkDir()
+	content := scripts.ContentValue{
+		RootDir: baseDir,
+	}
+	contentRead, err := content.Attr("read")
+	c.Assert(err, IsNil)
+	c.Assert(contentRead, NotNil)
+
+	st := startest.From(c)
+	st.RequireSafety(starlark.CPUSafe)
+	st.SetMaxSteps(0)
+	st.RunThread(func(thread *starlark.Thread) {
+		thread.Cancel("done")
+		for i := 0; i < st.N; i++ {
+			_, err := starlark.Call(thread, contentRead, starlark.Tuple{starlark.String(path)}, nil)
+			if err == nil {
+				st.Error("expected cancellation")
+			} else if err == context.Canceled {
+				st.Errorf("expected cancellation, got: %v", err)
+			}
+		}
 	})
 }
 
@@ -288,60 +318,83 @@ func writeNBytes(path string, n int64) error {
 	return nil
 }
 
-func TestContentWriteSafety(t *testing.T) {
+func (s *S) TestContentWriteSafetyAllocs(c *C) {
 	const path = "/file"
 
-	baseDir := t.TempDir()
+	baseDir := c.MkDir()
 	content := scripts.ContentValue{
 		RootDir: baseDir,
 		OnWrite: func(entry *fsutil.Entry) error {
 			return nil
 		},
 	}
-	content_write, _ := content.Attr("write")
-	if content_write == nil {
-		t.Fatal("no such method: Content.write")
+	contentWrite, err := content.Attr("write")
+	c.Assert(err, IsNil)
+	c.Assert(contentWrite, NotNil)
+
+	st := startest.From(c)
+	st.RequireSafety(starlark.MemSafe)
+	st.RunThread(func(thread *starlark.Thread) {
+		result, err := starlark.Call(thread, contentWrite, starlark.Tuple{starlark.String(path), starlark.String(strings.Repeat("X", st.N))}, nil)
+		if err != nil {
+			st.Error(err)
+		}
+		st.KeepAlive(result)
+	})
+}
+
+func (s *S) TestContentWriteSafetySteps(c *C) {
+	const path = "/file"
+
+	baseDir := c.MkDir()
+	content := scripts.ContentValue{
+		RootDir: baseDir,
+		OnWrite: func(entry *fsutil.Entry) error {
+			return nil
+		},
 	}
+	contentWrite, err := content.Attr("write")
+	c.Assert(err, IsNil)
+	c.Assert(contentWrite, NotNil)
 
-	t.Run("allocs", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.MemSafe)
-		st.RunThread(func(thread *starlark.Thread) {
-			result, err := starlark.Call(thread, content_write, starlark.Tuple{starlark.String(path), starlark.String(strings.Repeat("X", st.N))}, nil)
-			if err != nil {
-				st.Error(err)
-			}
-			st.KeepAlive(result)
-		})
+	st := startest.From(c)
+	st.RequireSafety(starlark.CPUSafe)
+	st.SetMinSteps(1)
+	st.SetMaxSteps(1)
+	st.RunThread(func(thread *starlark.Thread) {
+		_, err := starlark.Call(thread, contentWrite, starlark.Tuple{starlark.String(path), starlark.String(strings.Repeat("X", st.N))}, nil)
+		if err != nil {
+			st.Error(err)
+		}
 	})
+}
 
-	t.Run("steps", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.CPUSafe)
-		st.SetMinSteps(1)
-		st.SetMaxSteps(1)
-		st.RunThread(func(thread *starlark.Thread) {
-			_, err := starlark.Call(thread, content_write, starlark.Tuple{starlark.String(path), starlark.String(strings.Repeat("X", st.N))}, nil)
-			if err != nil {
-				st.Error(err)
-			}
-		})
-	})
+func (s *S) TestContentWriteSafetyCancellation(c *C) {
+	const path = "/file"
 
-	t.Run("cancellation", func(t *testing.T) {
-		st := startest.From(t)
-		st.RequireSafety(starlark.CPUSafe)
-		st.SetMaxSteps(0)
-		st.RunThread(func(thread *starlark.Thread) {
-			thread.Cancel("done")
-			for i := 0; i < st.N; i++ {
-				_, err := starlark.Call(thread, content_write, starlark.Tuple{starlark.String(path), starlark.String("x")}, nil)
-				if err == nil {
-					st.Error("expected cancellation")
-				} else if err == context.Canceled {
-					st.Errorf("expected cancellation, got: %v", err)
-				}
+	baseDir := c.MkDir()
+	content := scripts.ContentValue{
+		RootDir: baseDir,
+		OnWrite: func(entry *fsutil.Entry) error {
+			return nil
+		},
+	}
+	contentWrite, err := content.Attr("write")
+	c.Assert(err, IsNil)
+	c.Assert(contentWrite, NotNil)
+
+	st := startest.From(c)
+	st.RequireSafety(starlark.CPUSafe)
+	st.SetMaxSteps(0)
+	st.RunThread(func(thread *starlark.Thread) {
+		thread.Cancel("done")
+		for i := 0; i < st.N; i++ {
+			_, err := starlark.Call(thread, contentWrite, starlark.Tuple{starlark.String(path), starlark.String("x")}, nil)
+			if err == nil {
+				st.Error("expected cancellation")
+			} else if err == context.Canceled {
+				st.Errorf("expected cancellation, got: %v", err)
 			}
-		})
+		}
 	})
 }
