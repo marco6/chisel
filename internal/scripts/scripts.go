@@ -1,21 +1,20 @@
 package scripts
 
 import (
-	"bytes"
+	"context"
+	"errors"
+	"io"
+
+	"github.com/canonical/starlark/starlark"
+	"github.com/canonical/starlark/syntax"
+
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"go.starlark.net/resolve"
-	"go.starlark.net/starlark"
-
 	"github.com/canonical/chisel/internal/fsutil"
 )
-
-func init() {
-	resolve.AllowGlobalReassign = true
-}
 
 type Value = starlark.Value
 
@@ -25,10 +24,21 @@ type RunOptions struct {
 	Script    string
 }
 
+const requiredSafety = starlark.CPUSafe | starlark.MemSafe | starlark.TimeSafe
+
+var dialect = &syntax.FileOptions{
+	Set:               false,
+	While:             true,
+	TopLevelControl:   true,
+	GlobalReassign:    true,
+	LoadBindsGlobally: false,
+	Recursion:         false,
+}
+
 func Run(opts *RunOptions) error {
 	thread := &starlark.Thread{Name: opts.Label}
-	globals, err := starlark.ExecFile(thread, opts.Label, opts.Script, opts.Namespace)
-	_ = globals
+	thread.RequireSafety(requiredSafety)
+	_, err := starlark.ExecFileOptions(dialect, thread, opts.Label, opts.Script, opts.Namespace)
 	return err
 }
 
@@ -43,6 +53,8 @@ type ContentValue struct {
 
 // Content starlark.Value interface
 // --------------------------------------------------------------------------
+
+var _ Value = &ContentValue{}
 
 func (c *ContentValue) String() string {
 	return "Content{...}"
@@ -63,21 +75,38 @@ func (c *ContentValue) Hash() (uint32, error) {
 	return starlark.String(c.RootDir).Hash()
 }
 
-// Content starlark.HasAttrs interface
+// Content starlark.SafeStringer interface
 // --------------------------------------------------------------------------
 
-var _ starlark.HasAttrs = new(ContentValue)
+var _ starlark.SafeStringer = &ContentValue{}
 
-func (c *ContentValue) Attr(name string) (Value, error) {
-	switch name {
-	case "read":
-		return starlark.NewBuiltin("Content.read", c.Read), nil
-	case "write":
-		return starlark.NewBuiltin("Content.write", c.Write), nil
-	case "list":
-		return starlark.NewBuiltin("Content.list", c.List), nil
+func (c *ContentValue) SafeString(thread *starlark.Thread, sb starlark.StringBuilder) error {
+	_, err := sb.WriteString("Content{...}")
+	return err
+}
+
+// Content starlark.HasSafeAttrs interface
+// --------------------------------------------------------------------------
+
+var _ starlark.HasSafeAttrs = &ContentValue{}
+
+func (c *ContentValue) Attr(name string) (Value, error) { return c.SafeAttr(nil, name) }
+
+func (c *ContentValue) SafeAttr(thread *starlark.Thread, name string) (Value, error) {
+	const safety = starlark.CPUSafe | starlark.MemSafe | starlark.TimeSafe | starlark.IOSafe
+	if err := starlark.CheckSafety(thread, safety); err != nil {
+		return nil, err
 	}
-	return nil, nil
+	method, ok := contentValueMethods[name]
+	if !ok {
+		return nil, starlark.ErrNoAttr
+	}
+	if thread != nil {
+		if err := thread.AddAllocs(starlark.EstimateSize(&starlark.Builtin{})); err != nil {
+			return nil, err
+		}
+	}
+	return method.BindReceiver(c), nil
 }
 
 func (c *ContentValue) AttrNames() []string {
@@ -94,6 +123,12 @@ const (
 	CheckRead = 1 << iota
 	CheckWrite
 )
+
+var contentValueMethods = map[string]*starlark.Builtin{
+	"read":  starlark.NewBuiltinWithSafety("read", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueRead),
+	"write": starlark.NewBuiltinWithSafety("write", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueWrite),
+	"list":  starlark.NewBuiltinWithSafety("list", starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe, contentValueList),
+}
 
 func (c *ContentValue) RealPath(path string, what Check) (string, error) {
 	if !filepath.IsAbs(c.RootDir) {
@@ -143,29 +178,73 @@ func (c *ContentValue) polishError(path starlark.String, err error) error {
 	return err
 }
 
-func (c *ContentValue) Read(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
+func contentValueRead(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
 	var path starlark.String
 	err := starlark.UnpackArgs("Content.read", args, kwargs, "path", &path)
 	if err != nil {
 		return nil, err
 	}
+	c := fn.Receiver().(*ContentValue)
 
 	fpath, err := c.RealPath(path.GoString(), CheckRead)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(fpath)
+	data, err := safeReadFile(thread, fpath)
 	if err != nil {
 		return nil, c.polishError(path, err)
+	}
+	if err := thread.AddAllocs(starlark.StringTypeOverhead); err != nil {
+		return nil, err
 	}
 	return starlark.String(data), nil
 }
 
-func (c *ContentValue) Write(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
+func safeReadFile(thread *starlark.Thread, fpath string) (string, error) {
+	ctx := thread.Context()
+	if err := ctx.Err(); err != nil {
+		return "", context.Cause(ctx)
+	}
+
+	f, err := os.Open(fpath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	stop := context.AfterFunc(ctx, func() {
+		f.Close()
+	})
+	defer stop()
+
+	sb := starlark.NewSafeStringBuilder(thread)
+	_, err = f.WriteTo(sb)
+	if err == nil {
+		return sb.String(), nil
+	}
+	if errors.Is(err, os.ErrClosed) {
+		if err := ctx.Err(); err != nil {
+			return "", ctx.Err()
+		}
+	}
+	return "", err
+}
+
+func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
+	const pathMax = 4096
+
 	var path starlark.String
 	var data starlark.String
 	err := starlark.UnpackArgs("Content.write", args, kwargs, "path", &path, "data", &data)
 	if err != nil {
+		return nil, err
+	}
+	c := fn.Receiver().(*ContentValue)
+
+	if err := thread.AddSteps(starlark.SafeInt(len(data))); err != nil {
+		return nil, err
+	}
+	if err := thread.CheckAllocs(starlark.SafeInt(pathMax)); err != nil {
 		return nil, err
 	}
 
@@ -173,13 +252,12 @@ func (c *ContentValue) Write(thread *starlark.Thread, fn *starlark.Builtin, args
 	if err != nil {
 		return nil, err
 	}
-	fdata := []byte(data.GoString())
 
 	// No mode parameter for now as slices are supposed to list files
 	// explicitly instead.
-	entry, err := fsutil.Create(&fsutil.CreateOptions{
+	entry, err := fsutil.Create(thread.Context(), &fsutil.CreateOptions{
 		Path: fpath,
-		Data: bytes.NewReader(fdata),
+		Data: strings.NewReader(data.GoString()),
 		Mode: 0644,
 	})
 	if err != nil {
@@ -192,12 +270,13 @@ func (c *ContentValue) Write(thread *starlark.Thread, fn *starlark.Builtin, args
 	return starlark.None, nil
 }
 
-func (c *ContentValue) List(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
+func contentValueList(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (Value, error) {
 	var path starlark.String
 	err := starlark.UnpackArgs("Content.list", args, kwargs, "path", &path)
 	if err != nil {
 		return nil, err
 	}
+	c := fn.Receiver().(*ContentValue)
 
 	dpath := path.GoString()
 	if !strings.HasSuffix(dpath, "/") {
@@ -207,17 +286,38 @@ func (c *ContentValue) List(thread *starlark.Thread, fn *starlark.Builtin, args 
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(fpath)
+
+	values := []Value{}
+	valuesAppender := starlark.NewSafeAppender(thread, &values)
+	f, err := os.Open(fpath)
 	if err != nil {
 		return nil, c.polishError(path, err)
 	}
-	values := make([]Value, len(entries))
-	for i, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() {
-			name += "/"
+	defer f.Close()
+	for {
+		// Read entries in small chunks so that it doesn't create a big-enough spike to care.
+		entries, err := f.ReadDir(16)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, c.polishError(path, err)
 		}
-		values[i] = starlark.String(name)
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() {
+				name += "/"
+			}
+			value := starlark.Value(starlark.String(name))
+			if err := thread.AddAllocs(starlark.EstimateSize(value)); err != nil {
+				return nil, err
+			}
+			if err := valuesAppender.Append(value); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := thread.AddAllocs(starlark.EstimateSize(&starlark.List{})); err != nil {
+		return nil, err
 	}
 	return starlark.NewList(values), nil
 }

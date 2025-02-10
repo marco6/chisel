@@ -3,6 +3,7 @@ package setup
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -137,7 +138,7 @@ func extractTar(dataReader io.Reader, targetDir string) error {
 
 		//debugf("Extracting header: %#v", tarHeader)
 
-		_, err = fsutil.Create(&fsutil.CreateOptions{
+		_, err = fsutil.Create(context.Background(), &fsutil.CreateOptions{
 			Path:        filepath.Join(targetDir, sourcePath),
 			Mode:        tarHeader.FileInfo().Mode(),
 			Data:        tarReader,

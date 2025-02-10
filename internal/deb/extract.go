@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -53,7 +54,7 @@ func getValidOptions(options *ExtractOptions) (*ExtractOptions, error) {
 	if options.Create == nil {
 		validOpts := *options
 		validOpts.Create = func(_ []ExtractInfo, o *fsutil.CreateOptions) error {
-			_, err := fsutil.Create(o)
+			_, err := fsutil.Create(context.Background(), o)
 			return err
 		}
 		return &validOpts, nil

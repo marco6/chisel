@@ -3,6 +3,7 @@ package slicer
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -165,7 +166,7 @@ func Run(options *RunOptions) error {
 	// Creates the filesystem entry and adds it to the report. It also updates
 	// knownPaths with the files created.
 	create := func(extractInfos []deb.ExtractInfo, o *fsutil.CreateOptions) error {
-		entry, err := fsutil.Create(o)
+		entry, err := fsutil.Create(context.Background(), o)
 		if err != nil {
 			return err
 		}
@@ -453,7 +454,7 @@ func createFile(targetPath string, pathInfo setup.PathInfo) (*fsutil.Entry, erro
 		return nil, fmt.Errorf("internal error: cannot extract path of kind %q", pathInfo.Kind)
 	}
 
-	return fsutil.Create(&fsutil.CreateOptions{
+	return fsutil.Create(context.Background(), &fsutil.CreateOptions{
 		Path:        targetPath,
 		Mode:        tarHeader.FileInfo().Mode(),
 		Data:        fileContent,

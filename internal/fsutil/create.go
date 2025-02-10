@@ -1,8 +1,10 @@
 package fsutil
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -34,11 +36,14 @@ type Entry struct {
 	Link   string
 }
 
-// Create creates a filesystem entry according to the provided options and returns
-// the information about the created entry.
+// CreateContext creates a filesystem entry according to the provided options and
+// returns the information about the created entry.
 //
-// Create can return errors from the os package.
-func Create(options *CreateOptions) (*Entry, error) {
+// The context is only used to cancel the operation if the context is
+// canceled while the function is running.
+//
+// CreateContext can return errors from the os package.
+func Create(ctx context.Context, options *CreateOptions) (*Entry, error) {
 	rp := &readerProxy{inner: options.Data, h: sha256.New()}
 	// Use the proxy instead of the raw Reader.
 	optsCopy := *options
@@ -58,7 +63,7 @@ func Create(options *CreateOptions) (*Entry, error) {
 		if o.Link != "" {
 			err = createHardLink(o)
 		} else {
-			err = createFile(o)
+			err = createFile(ctx, o)
 			hash = hex.EncodeToString(rp.h.Sum(nil))
 		}
 	case fs.ModeDir:
@@ -142,14 +147,24 @@ func createDir(o *CreateOptions) error {
 	return err
 }
 
-func createFile(o *CreateOptions) error {
+func createFile(ctx context.Context, o *CreateOptions) error {
 	debugf("Writing file: %s (mode %#o)", o.Path, o.Mode)
 	file, err := os.OpenFile(o.Path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, o.Mode)
 	if err != nil {
 		return err
 	}
+	stop := context.AfterFunc(ctx, func() {
+		file.Close()
+	})
+	defer stop()
 	_, copyErr := io.Copy(file, o.Data)
-	err = file.Close()
+	if errors.Is(copyErr, os.ErrClosed) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	} else {
+		err = file.Close()
+	}
 	if copyErr != nil {
 		return copyErr
 	}
