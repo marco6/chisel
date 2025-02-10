@@ -255,7 +255,7 @@ func contentValueWrite(thread *starlark.Thread, fn *starlark.Builtin, args starl
 
 	// No mode parameter for now as slices are supposed to list files
 	// explicitly instead.
-	entry, err := fsutil.CreateContext(thread.Context(), &fsutil.CreateOptions{
+	entry, err := fsutil.Create(thread.Context(), &fsutil.CreateOptions{
 		Path: fpath,
 		Data: strings.NewReader(data.GoString()),
 		Mode: 0644,

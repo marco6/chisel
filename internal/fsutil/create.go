@@ -36,14 +36,6 @@ type Entry struct {
 	Link   string
 }
 
-// Create creates a filesystem entry according to the provided options and returns
-// the information about the created entry.
-//
-// Create can return errors from the os package.
-func Create(options *CreateOptions) (*Entry, error) {
-	return CreateContext(context.Background(), options)
-}
-
 // CreateContext creates a filesystem entry according to the provided options and
 // returns the information about the created entry.
 //
@@ -51,7 +43,7 @@ func Create(options *CreateOptions) (*Entry, error) {
 // canceled while the function is running.
 //
 // CreateContext can return errors from the os package.
-func CreateContext(ctx context.Context, options *CreateOptions) (*Entry, error) {
+func Create(ctx context.Context, options *CreateOptions) (*Entry, error) {
 	rp := &readerProxy{inner: options.Data, h: sha256.New()}
 	// Use the proxy instead of the raw Reader.
 	optsCopy := *options

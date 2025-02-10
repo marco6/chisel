@@ -2,6 +2,7 @@ package fsutil_test
 
 import (
 	"bytes"
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -292,7 +293,7 @@ func (s *S) TestCreate(c *C) {
 		if test.hackopt != nil {
 			test.hackopt(c, dir, &options)
 		}
-		entry, err := fsutil.Create(&options)
+		entry, err := fsutil.Create(context.Background(), &options)
 
 		if test.error != "" {
 			c.Assert(err, ErrorMatches, test.error)

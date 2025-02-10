@@ -2,6 +2,7 @@ package deb_test
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path"
 	"path/filepath"
@@ -475,7 +476,7 @@ func (s *S) TestExtract(c *C) {
 				relPath = relPath + "/"
 			}
 			createdPaths[relPath] = true
-			_, err := fsutil.Create(o)
+			_, err := fsutil.Create(context.Background(), o)
 			return err
 		}
 
