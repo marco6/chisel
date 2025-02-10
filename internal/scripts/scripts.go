@@ -190,7 +190,7 @@ func contentValueRead(thread *starlark.Thread, fn *starlark.Builtin, args starla
 	if err != nil {
 		return nil, err
 	}
-	data, err := SafeReadFile(thread, fpath)
+	data, err := safeReadFile(thread, fpath)
 	if err != nil {
 		return nil, c.polishError(path, err)
 	}
@@ -200,7 +200,7 @@ func contentValueRead(thread *starlark.Thread, fn *starlark.Builtin, args starla
 	return starlark.String(data), nil
 }
 
-func SafeReadFile(thread *starlark.Thread, fpath string) (string, error) {
+func safeReadFile(thread *starlark.Thread, fpath string) (string, error) {
 	ctx := thread.Context()
 	if err := ctx.Err(); err != nil {
 		return "", context.Cause(ctx)
